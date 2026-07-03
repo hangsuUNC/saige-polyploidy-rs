@@ -6,20 +6,15 @@ use anyhow::Result;
 use clap::Args;
 use tracing::info;
 
-use saige_core::glmm::ai_reml::{fit_ai_reml, AiRemlConfig};
 use saige_core::glmm::link::TraitType;
-use saige_core::glmm::pcg::OnTheFlyGrm;
-use saige_core::glmm::variance_ratio::{
-    estimate_variance_ratio, write_variance_ratio_file, VarianceRatioConfig, VarianceRatioResult,
-};
-use saige_core::model::null_model::NullModel;
+use saige_core::glmm::variance_ratio::write_variance_ratio_file;
 use saige_core::model::serialization;
 use saige_geno::phenotype;
 use saige_geno::plink::PlinkReader;
 use saige_geno::sample;
 use saige_geno::traits::{GenotypeReader, PloidyMode};
-use saige_linalg::decomposition::PcgSolver;
-use saige_linalg::dense::DenseMatrix;
+
+use super::pipeline::{fit_null_model, NullFitConfig};
 
 #[derive(Args)]
 pub struct FitNullArgs {
@@ -94,6 +89,11 @@ pub struct FitNullArgs {
     /// Whether to use categorical variance ratios
     #[arg(long, default_value = "false")]
     use_categorical_vr: bool,
+
+    /// Skip variance-ratio estimation (use VR = 1.0). Useful when few variants
+    /// will be tested (e.g. PheWAS) and avoids VR miscalibration.
+    #[arg(long, default_value = "false")]
+    skip_vr: bool,
 
     /// Ploidy for the GRM / variance-ratio markers: "diploid" (2, default),
     /// "haploid" (1), "auto" (per-marker max), or a positive number. Usually
@@ -198,211 +198,28 @@ pub fn run(args: FitNullArgs) -> Result<()> {
             x_data[(j + 1) * n + idx] = pheno_data.covariates[pheno_idx][j];
         }
     }
-    let x = DenseMatrix::from_col_major(n, p, x_data.clone());
 
-    // Read genotype dosages.
-    // R SAIGE reserves a random subset of markers for VR estimation and excludes
-    // them from GRM construction to ensure independence. We match that behavior:
-    // 1. First pass: read all markers passing QC
-    // 2. Randomly select VR candidate indices (1000 draws with dedup, ~900 unique)
-    // 3. Second pass: split into GRM-only and VR-only pools
-    info!("Reading genotypes...");
-    let n_markers = plink.n_markers();
-
-    struct MarkerData {
-        dosages: Vec<f64>,
-        af: f64,
-        mac: f64,
-    }
-
-    let mut all_passing: Vec<MarkerData> = Vec::new();
-    let n_samples_valid = valid_ids.len();
-    for m in 0..n_markers {
-        let data = plink.read_marker(m as u64)?;
-        let missing_rate = 1.0 - (data.n_valid as f64 / n_samples_valid as f64);
-        if data.af >= args.min_maf
-            && data.af <= 1.0 - args.min_maf
-            && missing_rate <= args.max_missing_rate
-        {
-            all_passing.push(MarkerData {
-                dosages: data.dosages,
-                af: data.af,
-                mac: data.mac,
-            });
-        }
-    }
-    info!(
-        "{} markers pass QC (MAF >= {}, missing <= {})",
-        all_passing.len(),
-        args.min_maf,
-        args.max_missing_rate,
-    );
-
-    // Select VR candidate indices: draw 1000 random indices (matching R SAIGE)
-    // from markers with MAC >= 20, then deduplicate.
-    use rand::Rng;
-    use rand::SeedableRng;
-    let mut vr_rng = rand_chacha::ChaCha8Rng::seed_from_u64(args.seed);
-    let n_passing = all_passing.len();
-    let mut vr_candidate_indices: Vec<usize> =
-        (0..1000).map(|_| vr_rng.gen_range(0..n_passing)).collect();
-    vr_candidate_indices.sort_unstable();
-    vr_candidate_indices.dedup();
-    // Only keep candidates with MAC >= 20
-    vr_candidate_indices.retain(|&i| all_passing[i].mac >= 20.0);
-    let vr_set: std::collections::HashSet<usize> = vr_candidate_indices.iter().copied().collect();
-
-    // Split into GRM and VR pools (mutually exclusive, matching R SAIGE)
-    let mut grm_dosages = Vec::new();
-    let mut grm_afs = Vec::new();
-    let mut vr_dosages = Vec::new();
-    let mut vr_macs = Vec::new();
-
-    for (i, marker) in all_passing.into_iter().enumerate() {
-        if vr_set.contains(&i) {
-            vr_dosages.push(marker.dosages);
-            vr_macs.push(marker.mac);
-        } else {
-            grm_dosages.push(marker.dosages);
-            grm_afs.push(marker.af);
-        }
-    }
-    info!(
-        "Using {} markers for GRM, {} reserved for VR estimation",
-        grm_dosages.len(),
-        vr_dosages.len(),
-    );
-
-    // Build on-the-fly GRM (takes reference, copies internally)
-    let grm = OnTheFlyGrm::new(&grm_dosages, &grm_afs);
-    let grm_vec = move |v: &[f64]| -> Vec<f64> { grm.mat_vec(v) };
-
-    // Fit null model using AI-REML
-    let config = AiRemlConfig {
+    // Fit the null model (shared core).
+    let cfg = NullFitConfig {
+        trait_type,
+        ploidy,
+        min_maf: args.min_maf,
+        max_missing_rate: args.max_missing_rate,
+        n_random_vectors: args.n_random_vectors,
+        n_markers_vr: args.n_markers_vr,
         max_iter: args.max_iter,
         tol: args.tol,
-        pcg_tol: 1e-5,
-        pcg_max_iter: 500,
-        n_random_vectors: args.n_random_vectors,
+        seed: args.seed,
         use_sparse_grm: args.use_sparse_grm,
-        seed: args.seed,
+        use_categorical_vr: args.use_categorical_vr,
+        skip_vr: args.skip_vr,
     };
-
-    info!("Fitting null model with AI-REML...");
-    let reml_result = fit_ai_reml(&y, &x, grm_vec, trait_type, &config)?;
-
-    info!(
-        "AI-REML result: tau=[{:.6}, {:.6}], converged={}",
-        reml_result.tau[0], reml_result.tau[1], reml_result.converged
-    );
-
-    // Compute XVX_inv_XV
-    let w = reml_result.working_weights.clone();
-    let xvx = x.xtwx(&w);
-    let xvx_inv = saige_linalg::decomposition::inverse_spd(&xvx)?;
-    let xvx_inv_xv_data: Vec<f64> = {
-        let mut data = vec![0.0; p * n];
-        for j in 0..p {
-            for i in 0..n {
-                let mut val = 0.0;
-                for k in 0..p {
-                    val += xvx_inv.get(j, k) * x.get(i, k) * w[i];
-                }
-                data[j * n + i] = val;
-            }
-        }
-        data
-    };
-
-    let xvx_inv_xv = DenseMatrix::from_col_major(p, n, xvx_inv_xv_data.clone());
-
-    // Estimate variance ratios using PCG solver
-    info!("Estimating variance ratios...");
-    let tau = reml_result.tau;
-    let mu_for_vr = reml_result.mu.clone();
-    let w_for_vr = reml_result.working_weights.clone();
-
-    // Reconstruct GRM for VR estimation (the first one was moved into grm_vec closure)
-    let grm_for_vr = OnTheFlyGrm::new(&grm_dosages, &grm_afs);
-    let pcg = PcgSolver::new(1e-5, 500);
-
-    // Sigma^{-1} operator: solves Sigma * x = v where Sigma = tau_e * diag(1/W) + tau_g * GRM
-    let sigma_inv = |v: &[f64]| -> Vec<f64> {
-        let sigma_op = |sv: &[f64]| -> Vec<f64> {
-            let grm_sv = grm_for_vr.mat_vec(sv);
-            sv.iter()
-                .zip(w_for_vr.iter())
-                .zip(grm_sv.iter())
-                .map(|((svi, wi), gi)| tau[0] * svi / wi.max(1e-30) + tau[1] * gi)
-                .collect()
-        };
-        let precond = |pv: &[f64]| -> Vec<f64> {
-            pv.iter()
-                .zip(w_for_vr.iter())
-                .map(|(pvi, wi)| {
-                    let diag = tau[0] / wi.max(1e-30) + tau[1];
-                    if diag.abs() > 1e-30 {
-                        pvi / diag
-                    } else {
-                        *pvi
-                    }
-                })
-                .collect()
-        };
-        pcg.solve(sigma_op, precond, v, None).x
-    };
-
-    let vr_config = VarianceRatioConfig {
-        n_markers: args.n_markers_vr,
-        min_mac: 20.0,
-        use_categorical: args.use_categorical_vr,
-        seed: args.seed,
-        ploidy,
-        ..Default::default()
-    };
-
-    let vr_result = if vr_dosages.is_empty() {
-        info!("No markers available for VR estimation, using default VR=1.0");
-        VarianceRatioResult {
-            variance_ratio: 1.0,
-            categorical_vr: Vec::new(),
-            n_markers_used: 0,
-            per_marker_vr: Vec::new(),
-        }
-    } else {
-        estimate_variance_ratio(
-            &vr_dosages,
-            &vr_macs,
-            &mu_for_vr,
-            tau,
-            trait_type,
-            &x,
-            &xvx_inv_xv,
-            sigma_inv,
-            &vr_config,
-        )?
-    };
-
-    info!("Variance ratio: {:.6}", vr_result.variance_ratio);
+    let model = fit_null_model(&mut plink, valid_ids, y, x_data, p, &cfg)?;
 
     // Write variance ratio file
     let vr_path = std::path::Path::new(&args.output_prefix).with_extension("varianceRatio.txt");
-    write_variance_ratio_file(&vr_result, &vr_path)?;
+    write_variance_ratio_file(&model.variance_ratio, &vr_path)?;
     info!("Variance ratio written to {}", vr_path.display());
-
-    // Build null model
-    let model = NullModel::new(
-        trait_type,
-        valid_ids,
-        reml_result.tau,
-        reml_result.alpha,
-        reml_result.mu,
-        y,
-        x_data,
-        p,
-        xvx_inv_xv_data,
-        vr_result,
-    );
 
     // Save model
     let model_path = std::path::Path::new(&args.output_prefix).with_extension("saige.model");

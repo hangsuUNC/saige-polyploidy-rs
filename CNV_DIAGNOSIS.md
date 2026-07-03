@@ -172,13 +172,35 @@ saige test --vcf-file mtdna.vcf.gz --model-file <phecode>.saige.model \
 
 CNV / tandem-repeat dosages (0..N): use `--ploidy auto` (or a fixed number) in Step 2.
 
-### Goal: SAIGE-PheWAS (still to build)
+### SAIGE-PheWAS (`saige phewas`) — implemented
 
-For 1–few variants × many phecodes, cost is the per-phenotype Step 1 fit. Planned optimizations:
-a shared sparse GRM across phecodes, per-phenotype null fits parallelized (rayon), a `--skip-vr`
-option (Wei's suggestion; also sidesteps VR-miscalibration inflation), and a `saige phewas`
-subcommand emitting a phecode × variant table. The ploidy control above makes the mtDNA PheWAS
-correct; the PheWAS batch workflow is the next build.
+A `phewas` subcommand runs Step 1 + Step 2 for many phenotypes in one process,
+**parallelized across phecodes** (rayon), so the per-phenotype null fit — the dominant cost — scales
+with cores. `--skip-vr` (default **on** for PheWAS) skips variance-ratio estimation per Wei's
+suggestion and sidesteps VR-miscalibration inflation. Output is a single phecode × variant table.
+
+Shared refactor: the Step-1 core (`fit_null_model`) and score-engine builder (`build_engine`) now
+live in `saige-cli/src/commands/pipeline.rs` and are reused by `fit-null`, `test`, and `phewas`.
+
+Example — mitochondrial (haploid) single-variant PheWAS across phecodes:
+
+```bash
+saige phewas \
+  --plink-file nuclear_grm \                 # Step 1 GRM (diploid nuclear SNPs)
+  --pheno-file base_pheno.tsv \
+  --phecodes P1,P2,P3            (or --phecode-file phecodes.txt) \
+  --covar-cols age,age2,sex,PC1,PC2,mPC1,mPC2 \
+  --test-vcf mtdna.vcf.gz --test-ploidy haploid \   # haploid mtDNA variants
+  --is-firth true \
+  --output-file phewas_results.tsv
+```
+
+For CNV/TR variants use `--test-ploidy auto`; `--test-plink` / `--test-bgen` are also accepted.
+
+Note: per-phenotype valid-sample sets differ (phenotype/covariate missingness), so each phecode fits
+its own GRM subset — matching running `fit-null` separately per phenotype, just faster and in one
+process. Not yet done: sharing a single in-memory genotype matrix across phecodes (memory-bound),
+and a sparse-GRM fast path for `phewas`.
 
 Still open (not yet done): P2 variance-ratio recalibration for the dosage scale and the
 skip-VR / PheWAS workflow; P3 per-sample missing imputation with a real CN source, BGEN per-sample
@@ -217,6 +239,20 @@ ploidy, and R-SAIGE numerical validation on a CNV marker set.
       VR bins are chosen with the corrected MAC. (`variance_ratio.rs`)
 - [ ] Add option to **skip variance-ratio estimation** for small numbers of test variants
       (per Wei's suggestion) — useful for PheWAS-style single-marker CNV tests.
+- [ ] **Force the exact test — always `is_fastTest = FALSE`; then remove the fast path.**
+      R SAIGE must be run with `--is_fastTest=FALSE` for accurate variance estimation; the default
+      `--is_fastTest=TRUE` uses an approximate variance formula that can produce **inflated variance
+      for high-AF variants**. The Rust analog is `--is-fast-spa` (default `true`, `assoc_test.rs:56`),
+      which routes to `saige-core/src/spa/fast.rs` — that path approximates the zero-genotype block's
+      CGF with a normal (`NAmu`/`NAsigma`), the same approximation source.
+      Sub-tasks:
+    - [ ] **Investigate/test why** the fast approximation inflates variance for high-AF variants
+          (few zero-dosage samples → the normal approximation of the zeroed block is poor; quantify
+          against the exact CGF on high-AF and CNV/haploid markers).
+    - [ ] Change the default to `false` and confirm concordance with the exact path.
+    - [ ] **Remove `is_fast_spa` / the fast-SPA code path entirely** (always exact): drop the flag in
+          `assoc_test.rs`, the `use_fast_spa` field in `ScoreTestEngine`, the `spa_binary_fast`
+          dispatch in `single_variant.rs`, and retire `saige-core/src/spa/fast.rs`.
 
 ### P3 — Imputation / readers / validation
 

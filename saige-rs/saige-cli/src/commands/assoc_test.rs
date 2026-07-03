@@ -129,34 +129,16 @@ pub fn run(args: AssocTestArgs) -> Result<()> {
     // Set sample subset to match model
     reader.set_sample_subset(&model.sample_ids)?;
 
-    // Build score test engine
+    // Build score test engine (shared with fit-null/phewas via pipeline).
     let n = model.n_samples;
     let p = model.n_covariates;
-    let x = DenseMatrix::from_col_major(n, p, model.x_flat.clone());
-    let xvx_inv_xv = DenseMatrix::from_col_major(p, n, model.xvx_inv_xv_flat.clone());
-
-    let engine = ScoreTestEngine {
-        trait_type: model.trait_type,
-        mu: model.mu.clone(),
-        mu2: model.mu2.clone(),
-        residuals: model.residuals.clone(),
-        tau_e: model.tau[0],
-        tau_g: model.tau[1],
-        xvx_inv_xv,
-        x,
-        variance_ratio: model.variance_ratio.variance_ratio,
-        categorical_vr: model.variance_ratio.categorical_vr.clone(),
-        use_spa: args.is_spa && model.trait_type == TraitType::Binary,
-        use_fast_spa: args.is_fast_spa,
-        spa_tol: 1e-6,
-        spa_pval_cutoff: args.spa_pval_cutoff,
+    let engine = super::pipeline::build_engine(
+        &model,
+        args.is_spa,
+        args.is_fast_spa,
+        args.spa_pval_cutoff,
         ploidy,
-        y: if model.trait_type == TraitType::Binary {
-            Some(model.y.clone())
-        } else {
-            None
-        },
-    };
+    );
 
     // Check if group file is provided for region-based tests
     if let Some(ref group_path) = args.group_file {
