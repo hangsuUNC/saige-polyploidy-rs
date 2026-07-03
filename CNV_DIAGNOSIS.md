@@ -154,6 +154,8 @@ cargo test --workspace
 # targeted:
 cargo test -p saige-geno traits::tests
 cargo test -p saige-core single_variant::tests::test_cnv_dosage_valid_af_and_finite_beta
+# end-to-end PheWAS CLI (runs the built `saige phewas` on fixtures; skips if absent):
+cargo test -p saige-cli --test phewas_e2e
 ```
 
 ### Usage examples
