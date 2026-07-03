@@ -52,6 +52,8 @@ pub struct PlinkReader {
     sample_ids: Vec<String>,
     /// Indices of selected samples (None = all samples).
     sample_subset: Option<Vec<usize>>,
+    /// Ploidy mode for AF/MAC normalization (default diploid).
+    ploidy: crate::traits::PloidyMode,
     /// Base path (without extension).
     _base_path: PathBuf,
 }
@@ -108,6 +110,7 @@ impl PlinkReader {
             bytes_per_marker,
             sample_ids,
             sample_subset: None,
+            ploidy: crate::traits::PloidyMode::Diploid,
             _base_path: base.to_path_buf(),
         })
     }
@@ -234,6 +237,10 @@ impl GenotypeReader for PlinkReader {
         Ok(())
     }
 
+    fn set_ploidy(&mut self, mode: crate::traits::PloidyMode) {
+        self.ploidy = mode;
+    }
+
     fn read_marker(&mut self, index: u64) -> Result<MarkerData> {
         if index as usize >= self.bim.len() {
             bail!("Marker index {} out of range ({})", index, self.bim.len());
@@ -246,7 +253,7 @@ impl GenotypeReader for PlinkReader {
             None => all_dosages,
         };
 
-        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages);
+        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages, self.ploidy);
 
         let bim = &self.bim[index as usize];
         Ok(MarkerData {

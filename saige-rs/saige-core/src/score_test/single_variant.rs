@@ -11,6 +11,7 @@
 use anyhow::Result;
 use statrs::distribution::{ChiSquared, ContinuousCDF};
 
+use saige_geno::traits::PloidyMode;
 use saige_linalg::dense::DenseMatrix;
 
 use crate::glmm::link::TraitType;
@@ -103,6 +104,8 @@ pub struct ScoreTestEngine {
     pub spa_tol: f64,
     /// SPA p-value threshold (only apply SPA if p < this).
     pub spa_pval_cutoff: f64,
+    /// Ploidy mode for AF/MAC normalization (diploid, haploid, auto, fixed).
+    pub ploidy: PloidyMode,
     /// Original y values (for computing case/control AF).
     pub y: Option<Vec<f64>>,
 }
@@ -121,27 +124,28 @@ impl ScoreTestEngine {
         let n = self.mu.len();
         assert_eq!(g.len(), n);
 
-        // Compute allele frequency and count.
-        // The copy-number maximum ("ploidy") is inferred per marker as
-        // max(2.0, max non-missing dosage) so AF stays in [0, 1] and MAC stays
-        // non-negative for CNV / polyploid dosages (> 2). For ordinary diploid
-        // markers ploidy == 2.0, recovering the original 2N behavior.
+        // Compute allele frequency and count under the configured ploidy mode.
+        // The per-sample denominator is 2 (diploid, default), 1 (haploid, e.g.
+        // mitochondrial variants), a fixed copy number, or the per-marker max
+        // dosage (auto/CNV). This keeps AF in [0, 1] and MAC non-negative for
+        // haploid and CNV dosages, and is byte-for-byte diploid by default.
+        let ploidy = self.ploidy.resolve(g);
         let mut sum = 0.0;
         let mut n_valid = 0;
-        let mut ploidy = 2.0_f64;
         for &gi in g {
             if !gi.is_nan() {
                 sum += gi;
                 n_valid += 1;
-                if gi > ploidy {
-                    ploidy = gi;
-                }
             }
         }
         let total = ploidy * n_valid as f64;
         let af = if n_valid > 0 { sum / total } else { 0.0 };
         let ac = sum;
-        let mac = if n_valid > 0 { ac.min(total - ac) } else { 0.0 };
+        let mac = if n_valid > 0 {
+            ac.min(total - ac).max(0.0)
+        } else {
+            0.0
+        };
 
         // Compute g_tilde = g - X * (X'VX)^{-1} * X'V * g
         let xvx_inv_xv_g = self.xvx_inv_xv.mat_vec(g);
@@ -381,6 +385,7 @@ mod tests {
             use_fast_spa: false,
             spa_tol: 1e-6,
             spa_pval_cutoff: 0.05,
+            ploidy: PloidyMode::Diploid,
             y: None,
         };
 
@@ -420,6 +425,7 @@ mod tests {
             use_fast_spa: false,
             spa_tol: 1e-6,
             spa_pval_cutoff: 0.05,
+            ploidy: PloidyMode::Auto,
             y: None,
         };
 

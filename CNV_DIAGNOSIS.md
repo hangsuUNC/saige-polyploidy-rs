@@ -106,20 +106,35 @@ Firth and SPA mostly *inherit* or *mask* the damage.
 
 ## Implementation status (branch `cnv-polyploidy-fixes`)
 
-Design decision: the copy-number maximum ("ploidy") is **inferred per marker** as
-`max(2.0, max non-missing dosage)`. The floor at 2 is a no-op for genuine CNV markers but keeps
-ordinary diploid markers byte-for-byte identical (including rare SNPs where no homozygote is
-observed). All AF/MAC/flip logic now routes through this single general path.
+Design: ploidy is now an **explicit mode** (`PloidyMode` in `saige-geno/src/traits.rs`), selectable
+per run via `--ploidy`:
+
+| `--ploidy` | Denominator | Use case |
+|-----------|-------------|----------|
+| `diploid` (default) | 2 | normal SNP GWAS — byte-for-byte unchanged |
+| `haploid` | 1 | **mitochondrial** homoplasmic (0/1) & heteroplasmic (VAF) variants, chrY |
+| `auto` | per-marker `max(2, max dosage)` | CNV / tandem-repeat dosages |
+| `<number>` | fixed N | known fixed copy number |
+
+This replaced the earlier data-inferred `max(2.0, max dosage)` floor, which was wrong for haploid
+mtDNA (it would halve the allele frequency). All AF/MAC/flip logic routes through
+`PloidyMode::resolve(dosages)`.
 
 Done in this branch:
 
-- **AF / MAC** generalized to the inferred ploidy denominator — `saige-geno/src/traits.rs`
-  (`compute_af`, new `infer_ploidy`, new `ploidy` field) and the three readers
-  (`plink.rs`, `vcf.rs`, `bgen.rs`). AF now ∈ [0,1], MAC ≥ 0 for dosage > 2.
+- **`PloidyMode` enum** with `resolve()` and `parse()` — `saige-geno/src/traits.rs`.
+- **AF / MAC** normalized by the resolved ploidy — `saige-geno/src/traits.rs` (`compute_af`, new
+  `ploidy` field) threaded through all readers (`plink.rs`, `vcf.rs`, `bgen.rs`, plus `set_ploidy`
+  on the `GenotypeReader` trait and the `sav`/`pgen` stubs). AF ∈ [0,1], MAC ≥ 0.
+- **CLI `--ploidy`** on `test` (`assoc_test.rs`) and `fit-null` (`fit_null.rs`); wired to the
+  reader, the `ScoreTestEngine`, and `VarianceRatioConfig`.
 - **Score-test path** recomputes AF/MAC with inferred ploidy and normalizes case/control AF —
   `saige-core/src/score_test/single_variant.rs`. This also feeds a sane MAC into variance-ratio
   bin selection.
-- **VR flip** generalized `2 - g` → `ploidy - g` — `saige-core/src/glmm/variance_ratio.rs`.
+- **VR flip** generalized `2 - g` → `ploidy - g` via `VarianceRatioConfig.ploidy` —
+  `saige-core/src/glmm/variance_ratio.rs`.
+- **Score engine** resolves AF/MAC/case-control AF via `ScoreTestEngine.ploidy` —
+  `saige-core/src/score_test/single_variant.rs`.
 - **Firth robustness** — `saige-core/src/firth/logistic.rs`: genotype column standardized before
   fitting (back-transformed after), and SE/p-value now computed at the final iterate so a finite
   Firth beta is returned even without full convergence.
@@ -141,9 +156,33 @@ cargo test -p saige-geno traits::tests
 cargo test -p saige-core single_variant::tests::test_cnv_dosage_valid_af_and_finite_beta
 ```
 
+### Usage examples
+
+Mitochondrial (haploid) single-variant PheWAS — Step 2 per phecode:
+
+```bash
+# Step 1 (nuclear GRM is diploid → leave --ploidy at default)
+saige fit-null --plink-file nuclear_grm --pheno-file pheno.tsv --pheno-col <phecode> \
+  --trait-type binary --sparse-grm sparseGRM.mtx ...
+
+# Step 2: mtDNA variants are haploid (homoplasmic 0/1 or heteroplasmic VAF)
+saige test --vcf-file mtdna.vcf.gz --model-file <phecode>.saige.model \
+  --ploidy haploid --is-firth true ...
+```
+
+CNV / tandem-repeat dosages (0..N): use `--ploidy auto` (or a fixed number) in Step 2.
+
+### Goal: SAIGE-PheWAS (still to build)
+
+For 1–few variants × many phecodes, cost is the per-phenotype Step 1 fit. Planned optimizations:
+a shared sparse GRM across phecodes, per-phenotype null fits parallelized (rayon), a `--skip-vr`
+option (Wei's suggestion; also sidesteps VR-miscalibration inflation), and a `saige phewas`
+subcommand emitting a phecode × variant table. The ploidy control above makes the mtDNA PheWAS
+correct; the PheWAS batch workflow is the next build.
+
 Still open (not yet done): P2 variance-ratio recalibration for the dosage scale and the
-skip-VR option; P3 per-sample missing imputation with a real CN source, BGEN per-sample ploidy,
-and R-SAIGE numerical validation on a CNV marker set.
+skip-VR / PheWAS workflow; P3 per-sample missing imputation with a real CN source, BGEN per-sample
+ploidy, and R-SAIGE numerical validation on a CNV marker set.
 
 ## TO-DO
 

@@ -18,7 +18,7 @@ use saige_core::score_test::single_variant::{
     write_result_line, write_results_header, ScoreTestEngine,
 };
 use saige_geno::group_file::GroupFile;
-use saige_geno::traits::GenotypeReader;
+use saige_geno::traits::{GenotypeReader, PloidyMode};
 use saige_linalg::dense::DenseMatrix;
 
 #[derive(Args)]
@@ -75,6 +75,12 @@ pub struct AssocTestArgs {
     #[arg(long, default_value = "0.0")]
     min_maf: f64,
 
+    /// Ploidy for AF/MAC normalization: "diploid" (2, default), "haploid" (1,
+    /// e.g. mitochondrial variants), "auto" (per-marker max dosage, for CNV),
+    /// or a positive number for a fixed copy number.
+    #[arg(long, default_value = "diploid")]
+    ploidy: String,
+
     /// Minimum info score filter
     #[arg(long, default_value = "0.0")]
     min_info: f64,
@@ -115,6 +121,11 @@ pub fn run(args: AssocTestArgs) -> Result<()> {
         reader.n_samples()
     );
 
+    // Resolve ploidy mode and apply it to the reader (drives AF/MAC/filters).
+    let ploidy = PloidyMode::parse(&args.ploidy)?;
+    info!("Ploidy mode: {:?}", ploidy);
+    reader.set_ploidy(ploidy);
+
     // Set sample subset to match model
     reader.set_sample_subset(&model.sample_ids)?;
 
@@ -139,6 +150,7 @@ pub fn run(args: AssocTestArgs) -> Result<()> {
         use_fast_spa: args.is_fast_spa,
         spa_tol: 1e-6,
         spa_pval_cutoff: args.spa_pval_cutoff,
+        ploidy,
         y: if model.trait_type == TraitType::Binary {
             Some(model.y.clone())
         } else {

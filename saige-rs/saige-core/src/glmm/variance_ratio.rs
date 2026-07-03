@@ -43,6 +43,9 @@ pub struct VarianceRatioConfig {
     pub ratio_cv_cutoff: f64,
     /// Random seed.
     pub seed: u64,
+    /// Ploidy mode for the AF computation and minor-allele flip. Defaults to
+    /// diploid; the GRM / variance-ratio markers are usually diploid SNPs.
+    pub ploidy: saige_geno::traits::PloidyMode,
 }
 
 impl Default for VarianceRatioConfig {
@@ -55,6 +58,7 @@ impl Default for VarianceRatioConfig {
             cate_max_mac_include: vec![1.5, 2.5, 3.5, 4.5, 5.5, 10.5, 20.5, f64::INFINITY],
             ratio_cv_cutoff: 0.001,
             seed: 12345,
+            ploidy: saige_geno::traits::PloidyMode::Diploid,
         }
     }
 }
@@ -130,13 +134,10 @@ where
         }
 
         // Flip to minor allele if needed. The copy-number maximum ("ploidy")
-        // is inferred per marker as max(2.0, max non-missing dosage) so the AF
-        // and the flip `ploidy - g` generalize beyond the diploid `2 - g`.
-        // For ordinary diploid markers ploidy == 2.0, recovering prior behavior.
-        let ploidy = g_raw
-            .iter()
-            .filter(|d| !d.is_nan())
-            .fold(2.0_f64, |m, &d| m.max(d));
+        // comes from the configured PloidyMode so the AF and the flip
+        // `ploidy - g` generalize beyond the diploid `2 - g` (diploid = 2,
+        // haploid = 1, auto = per-marker max). Diploid recovers prior behavior.
+        let ploidy = config.ploidy.resolve(g_raw);
         let af = g_raw.iter().filter(|d| !d.is_nan()).sum::<f64>() / (ploidy * n as f64);
         let g0: Vec<f64> = if af > 0.5 {
             g_raw.iter().map(|&gi| ploidy - gi).collect()

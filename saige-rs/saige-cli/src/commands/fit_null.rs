@@ -17,7 +17,7 @@ use saige_core::model::serialization;
 use saige_geno::phenotype;
 use saige_geno::plink::PlinkReader;
 use saige_geno::sample;
-use saige_geno::traits::GenotypeReader;
+use saige_geno::traits::{GenotypeReader, PloidyMode};
 use saige_linalg::decomposition::PcgSolver;
 use saige_linalg::dense::DenseMatrix;
 
@@ -95,6 +95,12 @@ pub struct FitNullArgs {
     #[arg(long, default_value = "false")]
     use_categorical_vr: bool,
 
+    /// Ploidy for the GRM / variance-ratio markers: "diploid" (2, default),
+    /// "haploid" (1), "auto" (per-marker max), or a positive number. Usually
+    /// left at diploid since the GRM is built from nuclear SNPs.
+    #[arg(long, default_value = "diploid")]
+    ploidy: String,
+
     /// Also save JSON sidecar for debugging
     #[arg(long, default_value = "false")]
     save_json: bool,
@@ -161,6 +167,11 @@ pub fn run(args: FitNullArgs) -> Result<()> {
         .collect();
 
     info!("Valid samples after filtering: {}", valid_ids.len());
+
+    // Resolve ploidy for GRM / VR markers and apply to the reader.
+    let ploidy = PloidyMode::parse(&args.ploidy)?;
+    info!("Ploidy mode (GRM/VR markers): {:?}", ploidy);
+    plink.set_ploidy(ploidy);
 
     // Set sample subset in genotype reader
     plink.set_sample_subset(&valid_ids)?;
@@ -346,6 +357,7 @@ pub fn run(args: FitNullArgs) -> Result<()> {
         min_mac: 20.0,
         use_categorical: args.use_categorical_vr,
         seed: args.seed,
+        ploidy,
         ..Default::default()
     };
 

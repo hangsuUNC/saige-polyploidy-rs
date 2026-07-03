@@ -21,6 +21,8 @@ pub struct VcfReader {
     sample_subset: Option<Vec<usize>>,
     /// Whether to prefer DS (dosage) over GT (genotype) field.
     prefer_dosage: bool,
+    /// Ploidy mode for AF/MAC normalization (default diploid).
+    ploidy: crate::traits::PloidyMode,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +87,7 @@ impl VcfReader {
             variants,
             sample_subset: None,
             prefer_dosage: true,
+            ploidy: crate::traits::PloidyMode::Diploid,
         })
     }
 
@@ -201,6 +204,10 @@ impl GenotypeReader for VcfReader {
         Ok(())
     }
 
+    fn set_ploidy(&mut self, mode: crate::traits::PloidyMode) {
+        self.ploidy = mode;
+    }
+
     fn read_marker(&mut self, index: u64) -> Result<MarkerData> {
         let idx = index as usize;
         if idx >= self.variants.len() {
@@ -219,7 +226,7 @@ impl GenotypeReader for VcfReader {
             None => all_dosages,
         };
 
-        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages);
+        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages, self.ploidy);
 
         let v = &self.variants[idx];
         Ok(MarkerData {
