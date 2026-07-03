@@ -116,10 +116,16 @@ pub fn parse_phenotype_file(
     })
 }
 
-/// Parse a string value to f64, treating NA/missing as NaN.
+/// Parse a string value to f64.
+///
+/// Missing tokens map to NaN. Boolean labels (as written by pandas/R, e.g.
+/// `True`/`False`) map to 1.0/0.0 so a phenotype or covariate coded as a logical
+/// is usable directly without pre-recoding.
 fn parse_value(s: &str) -> f64 {
     match s {
         "NA" | "na" | "Na" | "." | "" | "-" | "NaN" | "nan" => f64::NAN,
+        "True" | "TRUE" | "true" | "T" => 1.0,
+        "False" | "FALSE" | "false" | "F" => 0.0,
         _ => s.parse().unwrap_or(f64::NAN),
     }
 }
@@ -185,6 +191,11 @@ mod tests {
         assert!(parse_value("NA").is_nan());
         assert!(parse_value(".").is_nan());
         assert!(parse_value("").is_nan());
+        // Boolean labels (pandas/R) map to 1.0 / 0.0.
+        assert_eq!(parse_value("True"), 1.0);
+        assert_eq!(parse_value("TRUE"), 1.0);
+        assert_eq!(parse_value("False"), 0.0);
+        assert_eq!(parse_value("false"), 0.0);
     }
 
     #[test]
