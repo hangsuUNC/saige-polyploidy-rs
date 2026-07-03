@@ -8,7 +8,8 @@
 //!
 //! Algorithm (from SAIGE R/SAIGE_fitGLMM_fast.R):
 //!   For each marker G0:
-//!     1. Flip alleles if AF > 0.5: if sum(G0)/(2*N) > 0.5, G0 = 2 - G0
+//!     1. Flip alleles if AF > 0.5: with P = max(2, max dosage) (copy-number
+//!        max, = 2 for diploid), if sum(G0)/(P*N) > 0.5, G0 = P - G0
 //!     2. Compute AC = sum(G0)
 //!     3. X-adjust: G = G0 - X*(X'VX)^{-1}*(X'V)*G0
 //!     4. Normalize: g = G / sqrt(AC)
@@ -128,10 +129,17 @@ where
             continue;
         }
 
-        // Flip to minor allele if needed
-        let af = g_raw.iter().sum::<f64>() / (2.0 * n as f64);
+        // Flip to minor allele if needed. The copy-number maximum ("ploidy")
+        // is inferred per marker as max(2.0, max non-missing dosage) so the AF
+        // and the flip `ploidy - g` generalize beyond the diploid `2 - g`.
+        // For ordinary diploid markers ploidy == 2.0, recovering prior behavior.
+        let ploidy = g_raw
+            .iter()
+            .filter(|d| !d.is_nan())
+            .fold(2.0_f64, |m, &d| m.max(d));
+        let af = g_raw.iter().filter(|d| !d.is_nan()).sum::<f64>() / (ploidy * n as f64);
         let g0: Vec<f64> = if af > 0.5 {
-            g_raw.iter().map(|&gi| 2.0 - gi).collect()
+            g_raw.iter().map(|&gi| ploidy - gi).collect()
         } else {
             g_raw.clone()
         };

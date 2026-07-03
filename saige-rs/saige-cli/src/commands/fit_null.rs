@@ -233,9 +233,8 @@ pub fn run(args: FitNullArgs) -> Result<()> {
     use rand::SeedableRng;
     let mut vr_rng = rand_chacha::ChaCha8Rng::seed_from_u64(args.seed);
     let n_passing = all_passing.len();
-    let mut vr_candidate_indices: Vec<usize> = (0..1000)
-        .map(|_| vr_rng.gen_range(0..n_passing))
-        .collect();
+    let mut vr_candidate_indices: Vec<usize> =
+        (0..1000).map(|_| vr_rng.gen_range(0..n_passing)).collect();
     vr_candidate_indices.sort_unstable();
     vr_candidate_indices.dedup();
     // Only keep candidates with MAC >= 20

@@ -240,8 +240,9 @@ where
                 let sigma_inv_rv = pcg.solve(&sigma_vec, &precond, rv, None).x;
 
                 // P*u = Σ⁻¹u - Σ⁻¹X * (X'Σ⁻¹X)⁻¹ * (Σ⁻¹X)' * u
-                let sigma_ix_t_u: Vec<f64> =
-                    (0..p).map(|j| DenseMatrix::dot(&sigma_inv_x[j], rv)).collect();
+                let sigma_ix_t_u: Vec<f64> = (0..p)
+                    .map(|j| DenseMatrix::dot(&sigma_inv_x[j], rv))
+                    .collect();
                 let correction = chol.solve(&sigma_ix_t_u);
                 let mut p_u = sigma_inv_rv;
                 for j in 0..p {
@@ -261,8 +262,9 @@ where
 
         // AI: (GRM*P*y)' * P * (GRM*P*y) — full P-projection in AI
         let sigma_inv_grm_py = pcg.solve(&sigma_vec, &precond, &grm_p_y, None).x;
-        let sigma_ix_t_grm_py: Vec<f64> =
-            (0..p).map(|j| DenseMatrix::dot(&sigma_inv_x[j], &grm_p_y)).collect();
+        let sigma_ix_t_grm_py: Vec<f64> = (0..p)
+            .map(|j| DenseMatrix::dot(&sigma_inv_x[j], &grm_p_y))
+            .collect();
         let correction_grm = chol.solve(&sigma_ix_t_grm_py);
         let mut p_grm_py = sigma_inv_grm_py;
         for j in 0..p {
@@ -282,8 +284,9 @@ where
                 .par_iter()
                 .map(|rv| {
                     let sigma_inv_rv = pcg.solve(&sigma_vec, &precond, rv, None).x;
-                    let sigma_ix_t_u: Vec<f64> =
-                        (0..p).map(|j| DenseMatrix::dot(&sigma_inv_x[j], rv)).collect();
+                    let sigma_ix_t_u: Vec<f64> = (0..p)
+                        .map(|j| DenseMatrix::dot(&sigma_inv_x[j], rv))
+                        .collect();
                     let correction = chol.solve(&sigma_ix_t_u);
                     let mut p_u = sigma_inv_rv;
                     for j in 0..p {
@@ -291,21 +294,29 @@ where
                             p_u[i] -= sigma_inv_x[j][i] * correction[j];
                         }
                     }
-                    let inv_w_rv: Vec<f64> =
-                        rv.iter().zip(w.iter()).map(|(r, w)| r / w.max(1e-30)).collect();
+                    let inv_w_rv: Vec<f64> = rv
+                        .iter()
+                        .zip(w.iter())
+                        .map(|(r, w)| r / w.max(1e-30))
+                        .collect();
                     DenseMatrix::dot(&inv_w_rv, &p_u)
                 })
                 .sum::<f64>()
                 / config.n_random_vectors as f64;
 
-            let inv_w_p_y: Vec<f64> = p_y.iter().zip(w.iter()).map(|(pi, wi)| pi / wi.max(1e-30)).collect();
+            let inv_w_p_y: Vec<f64> = p_y
+                .iter()
+                .zip(w.iter())
+                .map(|(pi, wi)| pi / wi.max(1e-30))
+                .collect();
             let ypa0py = DenseMatrix::dot(&p_y, &inv_w_p_y);
             score_e = ypa0py - trace_w;
 
             // AI entries for diag(1/W) component
             let sigma_inv_inv_w_py = pcg.solve(&sigma_vec, &precond, &inv_w_p_y, None).x;
-            let sigma_ix_t_inv_w_py: Vec<f64> =
-                (0..p).map(|j| DenseMatrix::dot(&sigma_inv_x[j], &inv_w_p_y)).collect();
+            let sigma_ix_t_inv_w_py: Vec<f64> = (0..p)
+                .map(|j| DenseMatrix::dot(&sigma_inv_x[j], &inv_w_p_y))
+                .collect();
             let correction_inv_w = chol.solve(&sigma_ix_t_inv_w_py);
             let mut p_inv_w_py = sigma_inv_inv_w_py;
             for j in 0..p {
@@ -370,7 +381,10 @@ where
 
         debug!(
             "AI-REML iter {}: tau=[{:.6}, {:.6}], change={:.2e}{}",
-            iter, tau_new[0], tau_new[1], max_change,
+            iter,
+            tau_new[0],
+            tau_new[1],
+            max_change,
             if fix_tau_e { " (tau_e fixed)" } else { "" }
         );
 

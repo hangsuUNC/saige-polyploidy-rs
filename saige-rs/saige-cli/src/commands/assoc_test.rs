@@ -201,11 +201,26 @@ pub fn run(args: AssocTestArgs) -> Result<()> {
                 &marker_data.dosages,
                 &firth_config,
             );
+            // Firth is used for effect-size (BETA/SE) estimation; the
+            // association p-value from the score test / SPA is retained
+            // (matching R SAIGE's `is_Firth_beta` semantics). Adopt the Firth
+            // beta whenever it is finite — including from a non-converged fit —
+            // so we report a bias-reduced effect size instead of the
+            // ill-conditioned score-test beta (S/var), which explodes when the
+            // dosage has tiny dispersion.
             if let Ok(fr) = firth_result {
-                if fr.converged {
-                    result.beta = fr.beta[fr.beta.len() - 1];
-                    result.se_beta = fr.se[fr.se.len() - 1];
-                    result.pvalue = fr.pvalue;
+                let fb = fr.beta[fr.beta.len() - 1];
+                let fse = fr.se[fr.se.len() - 1];
+                if fb.is_finite() {
+                    result.beta = fb;
+                    result.se_beta = fse;
+                    if !fr.converged {
+                        tracing::warn!(
+                            "Firth did not fully converge for marker {}; reporting last-iterate beta={:.6}",
+                            result.marker_id,
+                            fb
+                        );
+                    }
                 }
             }
         }

@@ -246,7 +246,7 @@ impl GenotypeReader for PlinkReader {
             None => all_dosages,
         };
 
-        let (af, mac, n_valid) = MarkerData::compute_af(&dosages);
+        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages);
 
         let bim = &self.bim[index as usize];
         Ok(MarkerData {
@@ -261,6 +261,7 @@ impl GenotypeReader for PlinkReader {
             af,
             mac,
             n_valid,
+            ploidy,
             is_imputed: false,
             info_score: None,
         })

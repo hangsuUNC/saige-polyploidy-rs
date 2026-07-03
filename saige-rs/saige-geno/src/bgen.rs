@@ -493,7 +493,7 @@ impl GenotypeReader for BgenReader {
             None => all_dosages,
         };
 
-        let (af, mac, n_valid) = MarkerData::compute_af(&dosages);
+        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages);
 
         let entry = &self.index[idx];
         Ok(MarkerData {
@@ -508,6 +508,7 @@ impl GenotypeReader for BgenReader {
             af,
             mac,
             n_valid,
+            ploidy,
             is_imputed: true,
             info_score: None,
         })

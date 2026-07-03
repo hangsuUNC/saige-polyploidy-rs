@@ -121,18 +121,27 @@ impl ScoreTestEngine {
         let n = self.mu.len();
         assert_eq!(g.len(), n);
 
-        // Compute allele frequency and count
+        // Compute allele frequency and count.
+        // The copy-number maximum ("ploidy") is inferred per marker as
+        // max(2.0, max non-missing dosage) so AF stays in [0, 1] and MAC stays
+        // non-negative for CNV / polyploid dosages (> 2). For ordinary diploid
+        // markers ploidy == 2.0, recovering the original 2N behavior.
         let mut sum = 0.0;
         let mut n_valid = 0;
+        let mut ploidy = 2.0_f64;
         for &gi in g {
             if !gi.is_nan() {
                 sum += gi;
                 n_valid += 1;
+                if gi > ploidy {
+                    ploidy = gi;
+                }
             }
         }
-        let af = sum / (2.0 * n_valid as f64);
+        let total = ploidy * n_valid as f64;
+        let af = if n_valid > 0 { sum / total } else { 0.0 };
         let ac = sum;
-        let mac = ac.min(2.0 * n_valid as f64 - ac);
+        let mac = if n_valid > 0 { ac.min(total - ac) } else { 0.0 };
 
         // Compute g_tilde = g - X * (X'VX)^{-1} * X'V * g
         let xvx_inv_xv_g = self.xvx_inv_xv.mat_vec(g);
@@ -221,7 +230,7 @@ impl ScoreTestEngine {
 
         // Case/control AF (binary traits only)
         let (af_cases, af_controls, n_cases, n_controls) = if let Some(ref y) = self.y {
-            compute_case_control_af(g, y)
+            compute_case_control_af(g, y, ploidy)
         } else {
             (f64::NAN, f64::NAN, 0, 0)
         };
@@ -257,7 +266,7 @@ impl ScoreTestEngine {
 }
 
 /// Compute allele frequency separately for cases and controls.
-fn compute_case_control_af(g: &[f64], y: &[f64]) -> (f64, f64, usize, usize) {
+fn compute_case_control_af(g: &[f64], y: &[f64], ploidy: f64) -> (f64, f64, usize, usize) {
     let mut sum_cases = 0.0;
     let mut n_cases = 0usize;
     let mut sum_controls = 0.0;
@@ -276,13 +285,15 @@ fn compute_case_control_af(g: &[f64], y: &[f64]) -> (f64, f64, usize, usize) {
         }
     }
 
+    // Normalize by the per-marker copy-number max (2.0 for diploid) so
+    // case/control AF are comparable to the overall AF and stay in [0, 1].
     let af_cases = if n_cases > 0 {
-        sum_cases / (2.0 * n_cases as f64)
+        sum_cases / (ploidy * n_cases as f64)
     } else {
         f64::NAN
     };
     let af_controls = if n_controls > 0 {
-        sum_controls / (2.0 * n_controls as f64)
+        sum_controls / (ploidy * n_controls as f64)
     } else {
         f64::NAN
     };
@@ -383,11 +394,51 @@ mod tests {
     }
 
     #[test]
+    fn test_cnv_dosage_valid_af_and_finite_beta() {
+        // CNV dosages in [0, 8] (most samples at 2). The old 2N denominator
+        // produced AF > 1 and negative MAC; the inferred ploidy must fix both,
+        // and the reported beta must stay finite.
+        let n = 10;
+        let mu = vec![0.5; n];
+        let mu2 = vec![0.25; n];
+        let residuals = vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5, 0.5, -0.5, 0.5, -0.5];
+        let x = DenseMatrix::from_col_major(n, 1, vec![1.0; n]);
+        let xvx_inv_xv = DenseMatrix::from_col_major(1, n, vec![1.0 / n as f64; n]);
+
+        let engine = ScoreTestEngine {
+            trait_type: TraitType::Binary,
+            mu: mu.clone(),
+            mu2,
+            residuals,
+            tau_e: 1.0,
+            tau_g: 0.1,
+            xvx_inv_xv,
+            x,
+            variance_ratio: 1.0,
+            categorical_vr: Vec::new(),
+            use_spa: false,
+            use_fast_spa: false,
+            spa_tol: 1e-6,
+            spa_pval_cutoff: 0.05,
+            y: None,
+        };
+
+        let g = vec![2.0, 2.0, 4.0, 2.0, 8.0, 2.0, 2.0, 6.0, 2.0, 2.0];
+        let result = engine
+            .test_marker(&g, "cnv1", "chrM", 100, "A", "G")
+            .unwrap();
+
+        assert!((0.0..=1.0).contains(&result.af), "af={}", result.af);
+        assert!(result.mac >= 0.0, "mac={}", result.mac);
+        assert!(result.beta.is_finite(), "beta={}", result.beta);
+    }
+
+    #[test]
     fn test_case_control_af() {
         let g = vec![0.0, 1.0, 2.0, 0.0, 1.0, 0.0, 2.0, 1.0, 0.0, 0.0];
         let y = vec![1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
-        let (af_cases, af_controls, n_cases, n_controls) = compute_case_control_af(&g, &y);
+        let (af_cases, af_controls, n_cases, n_controls) = compute_case_control_af(&g, &y, 2.0);
 
         assert_eq!(n_cases, 5);
         assert_eq!(n_controls, 5);

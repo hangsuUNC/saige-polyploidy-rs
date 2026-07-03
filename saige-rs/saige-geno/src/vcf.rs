@@ -219,7 +219,7 @@ impl GenotypeReader for VcfReader {
             None => all_dosages,
         };
 
-        let (af, mac, n_valid) = MarkerData::compute_af(&dosages);
+        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages);
 
         let v = &self.variants[idx];
         Ok(MarkerData {
@@ -234,6 +234,7 @@ impl GenotypeReader for VcfReader {
             af,
             mac,
             n_valid,
+            ploidy,
             is_imputed: false,
             info_score: None,
         })
