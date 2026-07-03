@@ -326,17 +326,66 @@ fn run_one_phecode(
     let geno_ids = plink.sample_ids().to_vec();
     let intersection = sample::intersect_samples(&[&pheno_data.sample_ids, &geno_ids]);
     if intersection.ids.is_empty() {
-        anyhow::bail!("no overlapping samples");
+        anyhow::bail!(
+            "no overlapping samples between the phenotype file (sample ID column '{}') and \
+             the PLINK .fam; check --sample-id-col and that the IDs use the same format",
+            args.sample_id_col
+        );
     }
 
-    let valid_indices = phenotype::valid_sample_indices(&pheno_data);
-    let valid_ids: Vec<String> = valid_indices
+    // Phenotype-table indices for samples present in both files (HashSet for O(1)
+    // membership on large cohorts).
+    let overlap: std::collections::HashSet<&String> = intersection.ids.iter().collect();
+    let in_both: Vec<usize> = (0..pheno_data.sample_ids.len())
+        .filter(|&i| overlap.contains(&pheno_data.sample_ids[i]))
+        .collect();
+
+    // Diagnose missingness among the overlapping samples so a filter that drops
+    // everything reports *why* (e.g. a non-numeric covariate parsed as NaN).
+    let n_pheno_ok = in_both
         .iter()
-        .filter(|&&i| intersection.ids.contains(&pheno_data.sample_ids[i]))
+        .filter(|&&i| !pheno_data.phenotype[i].is_nan())
+        .count();
+    for (j, name) in covar_cols.iter().enumerate() {
+        let n_ok = in_both
+            .iter()
+            .filter(|&&i| {
+                j < pheno_data.covariates[i].len() && !pheno_data.covariates[i][j].is_nan()
+            })
+            .count();
+        if n_ok == 0 {
+            anyhow::bail!(
+                "covariate '{name}' is missing/non-numeric for all {} overlapping samples \
+                 (parsed as NaN). SAIGE-rs covariates must be numeric — for sex use a numeric \
+                 column such as 'sex_x' rather than a categorical 'sex'.",
+                in_both.len()
+            );
+        }
+    }
+
+    let valid_ids: Vec<String> = in_both
+        .iter()
+        .filter(|&&i| {
+            !pheno_data.phenotype[i].is_nan()
+                && (0..covar_cols.len()).all(|j| {
+                    j < pheno_data.covariates[i].len() && !pheno_data.covariates[i][j].is_nan()
+                })
+        })
         .map(|&i| pheno_data.sample_ids[i].clone())
         .collect();
+    info!(
+        "[{phecode}] overlap={} phenotype_non_missing={} valid_after_covariates={}",
+        intersection.ids.len(),
+        n_pheno_ok,
+        valid_ids.len(),
+    );
     if valid_ids.is_empty() {
-        anyhow::bail!("no valid samples after filtering");
+        anyhow::bail!(
+            "no valid samples after filtering (overlap={}, phenotype non-missing={}); \
+             a covariate or the phenotype is NaN for all overlapping samples",
+            intersection.ids.len(),
+            n_pheno_ok
+        );
     }
 
     plink.set_ploidy(grm_ploidy);
