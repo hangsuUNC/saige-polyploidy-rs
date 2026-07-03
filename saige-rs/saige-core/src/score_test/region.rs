@@ -493,6 +493,7 @@ mod tests {
             use_fast_spa: false,
             spa_tol: 1e-6,
             spa_pval_cutoff: 0.05,
+            ploidy: saige_geno::traits::PloidyMode::Diploid,
             y: None,
         };
 

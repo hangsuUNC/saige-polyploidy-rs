@@ -131,33 +131,7 @@ pub fn firth_logistic(y: &[f64], x: &DenseMatrix, config: &FirthConfig) -> Resul
         }
 
         if max_change < config.tol {
-            // Compute final SE and p-value
-            let eta_final = x.mat_vec(&beta);
-            let mu_final: Vec<f64> = eta_final.iter().map(|&e| logistic(e)).collect();
-            let w_final: Vec<f64> = mu_final
-                .iter()
-                .map(|&m| (m * (1.0 - m)).max(1e-10))
-                .collect();
-            let info_final = x.xtwx(&w_final);
-
-            let se = match CholeskyDecomp::new(&info_final) {
-                Ok(chol) => {
-                    let inv = chol.inverse();
-                    (0..p).map(|j| inv.get(j, j).max(0.0).sqrt()).collect()
-                }
-                Err(_) => vec![f64::NAN; p],
-            };
-
-            // Wald test p-value for last coefficient
-            let z = if se[p - 1] > 1e-30 {
-                beta[p - 1] / se[p - 1]
-            } else {
-                0.0
-            };
-            use statrs::distribution::{ContinuousCDF, Normal};
-            let norm = Normal::new(0.0, 1.0).unwrap();
-            let pvalue = 2.0 * (1.0 - norm.cdf(z.abs()));
-
+            let (se, pvalue) = firth_se_pvalue(x, &beta);
             return Ok(FirthResult {
                 beta,
                 se,
@@ -169,16 +143,49 @@ pub fn firth_logistic(y: &[f64], x: &DenseMatrix, config: &FirthConfig) -> Resul
         }
     }
 
-    // Did not converge - return current estimates
-    let se = vec![f64::NAN; p];
+    // Did not fully converge within max_iter. Still return the current
+    // (bias-reduced) estimates, with SE/p-value computed at the final iterate,
+    // so callers can report a finite Firth beta instead of falling back to an
+    // ill-conditioned score-test beta. `converged` is false to flag this.
+    let (se, pvalue) = firth_se_pvalue(x, &beta);
     Ok(FirthResult {
         beta,
         se,
-        pvalue: f64::NAN,
+        pvalue,
         iterations: config.max_iter,
         converged: false,
         hat_diag: vec![0.0; n],
     })
+}
+
+/// Compute standard errors (from the unpenalized information matrix `X'WX`)
+/// and the two-sided Wald p-value for the last coefficient, evaluated at
+/// `beta`. Shared by the converged and non-converged return paths.
+fn firth_se_pvalue(x: &DenseMatrix, beta: &[f64]) -> (Vec<f64>, f64) {
+    let p = x.ncols();
+    let eta = x.mat_vec(beta);
+    let mu: Vec<f64> = eta.iter().map(|&e| logistic(e)).collect();
+    let w: Vec<f64> = mu.iter().map(|&m| (m * (1.0 - m)).max(1e-10)).collect();
+    let info = x.xtwx(&w);
+
+    let se: Vec<f64> = match CholeskyDecomp::new(&info) {
+        Ok(chol) => {
+            let inv = chol.inverse();
+            (0..p).map(|j| inv.get(j, j).max(0.0).sqrt()).collect()
+        }
+        Err(_) => vec![f64::NAN; p],
+    };
+
+    let z = if se[p - 1].is_finite() && se[p - 1] > 1e-30 {
+        beta[p - 1] / se[p - 1]
+    } else {
+        0.0
+    };
+    use statrs::distribution::{ContinuousCDF, Normal};
+    let norm = Normal::new(0.0, 1.0).unwrap();
+    let pvalue = 2.0 * (1.0 - norm.cdf(z.abs()));
+
+    (se, pvalue)
 }
 
 /// Logistic function: 1 / (1 + exp(-x))
@@ -224,6 +231,22 @@ pub fn firth_test_variant(
     let n = y.len();
     let p_covars = covariates.ncols();
 
+    // Standardize the genotype column (center and scale to unit variance)
+    // before fitting. A near-constant predictor (e.g. a CNV dosage where almost
+    // everyone has the same copy number) makes X'WX near-singular in the
+    // genotype term and destabilizes Newton-Raphson. Standardizing conditions
+    // the problem; the coefficient and SE are back-transformed afterward, and
+    // the Wald z (beta/se) — hence the p-value — is invariant to this rescaling.
+    let g_mean: f64 = genotype.iter().take(n).sum::<f64>() / n as f64;
+    let g_var: f64 = genotype
+        .iter()
+        .take(n)
+        .map(|&gi| (gi - g_mean).powi(2))
+        .sum::<f64>()
+        / n as f64;
+    let g_sd = g_var.sqrt();
+    let standardize = g_sd > 1e-8;
+
     // Build full design matrix: [covariates | genotype]
     let mut x_full = DenseMatrix::zeros(n, p_covars + 1);
     for j in 0..p_covars {
@@ -232,10 +255,28 @@ pub fn firth_test_variant(
         }
     }
     for (i, &gi) in genotype.iter().enumerate().take(n) {
-        x_full.set(i, p_covars, gi);
+        let val = if standardize {
+            (gi - g_mean) / g_sd
+        } else {
+            gi
+        };
+        x_full.set(i, p_covars, val);
     }
 
-    firth_logistic(y, &x_full, config)
+    let mut result = firth_logistic(y, &x_full, config)?;
+
+    // Back-transform the genotype coefficient and SE to the original dosage
+    // scale (per-copy effect). Centering only shifts the intercept, which is
+    // not reported, so no further adjustment is needed.
+    if standardize {
+        let last = result.beta.len() - 1;
+        result.beta[last] /= g_sd;
+        if result.se[last].is_finite() {
+            result.se[last] /= g_sd;
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use saige_core::score_test::single_variant::{
     write_result_line, write_results_header, ScoreTestEngine,
 };
 use saige_geno::group_file::GroupFile;
-use saige_geno::traits::GenotypeReader;
+use saige_geno::traits::{GenotypeReader, PloidyMode};
 use saige_linalg::dense::DenseMatrix;
 
 #[derive(Args)]
@@ -75,6 +75,12 @@ pub struct AssocTestArgs {
     #[arg(long, default_value = "0.0")]
     min_maf: f64,
 
+    /// Ploidy for AF/MAC normalization: "diploid" (2, default), "haploid" (1,
+    /// e.g. mitochondrial variants), "auto" (per-marker max dosage, for CNV),
+    /// or a positive number for a fixed copy number.
+    #[arg(long, default_value = "diploid")]
+    ploidy: String,
+
     /// Minimum info score filter
     #[arg(long, default_value = "0.0")]
     min_info: f64,
@@ -115,36 +121,24 @@ pub fn run(args: AssocTestArgs) -> Result<()> {
         reader.n_samples()
     );
 
+    // Resolve ploidy mode and apply it to the reader (drives AF/MAC/filters).
+    let ploidy = PloidyMode::parse(&args.ploidy)?;
+    info!("Ploidy mode: {:?}", ploidy);
+    reader.set_ploidy(ploidy);
+
     // Set sample subset to match model
     reader.set_sample_subset(&model.sample_ids)?;
 
-    // Build score test engine
+    // Build score test engine (shared with fit-null/phewas via pipeline).
     let n = model.n_samples;
     let p = model.n_covariates;
-    let x = DenseMatrix::from_col_major(n, p, model.x_flat.clone());
-    let xvx_inv_xv = DenseMatrix::from_col_major(p, n, model.xvx_inv_xv_flat.clone());
-
-    let engine = ScoreTestEngine {
-        trait_type: model.trait_type,
-        mu: model.mu.clone(),
-        mu2: model.mu2.clone(),
-        residuals: model.residuals.clone(),
-        tau_e: model.tau[0],
-        tau_g: model.tau[1],
-        xvx_inv_xv,
-        x,
-        variance_ratio: model.variance_ratio.variance_ratio,
-        categorical_vr: model.variance_ratio.categorical_vr.clone(),
-        use_spa: args.is_spa && model.trait_type == TraitType::Binary,
-        use_fast_spa: args.is_fast_spa,
-        spa_tol: 1e-6,
-        spa_pval_cutoff: args.spa_pval_cutoff,
-        y: if model.trait_type == TraitType::Binary {
-            Some(model.y.clone())
-        } else {
-            None
-        },
-    };
+    let engine = super::pipeline::build_engine(
+        &model,
+        args.is_spa,
+        args.is_fast_spa,
+        args.spa_pval_cutoff,
+        ploidy,
+    );
 
     // Check if group file is provided for region-based tests
     if let Some(ref group_path) = args.group_file {
@@ -201,11 +195,26 @@ pub fn run(args: AssocTestArgs) -> Result<()> {
                 &marker_data.dosages,
                 &firth_config,
             );
+            // Firth is used for effect-size (BETA/SE) estimation; the
+            // association p-value from the score test / SPA is retained
+            // (matching R SAIGE's `is_Firth_beta` semantics). Adopt the Firth
+            // beta whenever it is finite — including from a non-converged fit —
+            // so we report a bias-reduced effect size instead of the
+            // ill-conditioned score-test beta (S/var), which explodes when the
+            // dosage has tiny dispersion.
             if let Ok(fr) = firth_result {
-                if fr.converged {
-                    result.beta = fr.beta[fr.beta.len() - 1];
-                    result.se_beta = fr.se[fr.se.len() - 1];
-                    result.pvalue = fr.pvalue;
+                let fb = fr.beta[fr.beta.len() - 1];
+                let fse = fr.se[fr.se.len() - 1];
+                if fb.is_finite() {
+                    result.beta = fb;
+                    result.se_beta = fse;
+                    if !fr.converged {
+                        tracing::warn!(
+                            "Firth did not fully converge for marker {}; reporting last-iterate beta={:.6}",
+                            result.marker_id,
+                            fb
+                        );
+                    }
                 }
             }
         }

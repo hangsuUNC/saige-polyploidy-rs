@@ -37,6 +37,9 @@ enum Commands {
     /// Step 2: Run single-variant or region-based association tests
     Test(commands::assoc_test::AssocTestArgs),
 
+    /// PheWAS: test a variant set against many phenotypes (Step 1 + Step 2)
+    Phewas(commands::phewas::PheWasArgs),
+
     /// Step 3: Compute LD matrix for region-based tests
     LdMatrix(commands::ld_matrix::LdMatrixArgs),
 
@@ -76,6 +79,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::FitNull(args) => commands::fit_null::run(args),
         Commands::Test(args) => commands::assoc_test::run(args),
+        Commands::Phewas(args) => commands::phewas::run(args),
         Commands::LdMatrix(args) => commands::ld_matrix::run(args),
         Commands::CreateSparseGrm(args) => commands::create_sparse_grm::run(args),
         Commands::GetNeff(args) => commands::get_neff::run(args),

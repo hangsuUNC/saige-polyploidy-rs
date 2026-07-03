@@ -6,7 +6,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::traits::{GenotypeReader, MarkerData, MarkerInfo};
+use crate::traits::{GenotypeReader, MarkerData, MarkerInfo, PloidyMode};
 
 /// Reader for PGEN files (stub - requires pgenlib C FFI).
 pub struct PgenReader {
@@ -32,6 +32,7 @@ impl GenotypeReader for PgenReader {
     fn set_sample_subset(&mut self, _ids: &[String]) -> Result<()> {
         Ok(())
     }
+    fn set_ploidy(&mut self, _mode: PloidyMode) {}
     fn read_marker(&mut self, _index: u64) -> Result<MarkerData> {
         bail!("PGEN reader not yet implemented")
     }

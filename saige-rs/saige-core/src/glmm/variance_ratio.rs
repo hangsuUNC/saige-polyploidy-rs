@@ -8,7 +8,8 @@
 //!
 //! Algorithm (from SAIGE R/SAIGE_fitGLMM_fast.R):
 //!   For each marker G0:
-//!     1. Flip alleles if AF > 0.5: if sum(G0)/(2*N) > 0.5, G0 = 2 - G0
+//!     1. Flip alleles if AF > 0.5: with P = max(2, max dosage) (copy-number
+//!        max, = 2 for diploid), if sum(G0)/(P*N) > 0.5, G0 = P - G0
 //!     2. Compute AC = sum(G0)
 //!     3. X-adjust: G = G0 - X*(X'VX)^{-1}*(X'V)*G0
 //!     4. Normalize: g = G / sqrt(AC)
@@ -42,6 +43,9 @@ pub struct VarianceRatioConfig {
     pub ratio_cv_cutoff: f64,
     /// Random seed.
     pub seed: u64,
+    /// Ploidy mode for the AF computation and minor-allele flip. Defaults to
+    /// diploid; the GRM / variance-ratio markers are usually diploid SNPs.
+    pub ploidy: saige_geno::traits::PloidyMode,
 }
 
 impl Default for VarianceRatioConfig {
@@ -54,6 +58,7 @@ impl Default for VarianceRatioConfig {
             cate_max_mac_include: vec![1.5, 2.5, 3.5, 4.5, 5.5, 10.5, 20.5, f64::INFINITY],
             ratio_cv_cutoff: 0.001,
             seed: 12345,
+            ploidy: saige_geno::traits::PloidyMode::Diploid,
         }
     }
 }
@@ -128,10 +133,14 @@ where
             continue;
         }
 
-        // Flip to minor allele if needed
-        let af = g_raw.iter().sum::<f64>() / (2.0 * n as f64);
+        // Flip to minor allele if needed. The copy-number maximum ("ploidy")
+        // comes from the configured PloidyMode so the AF and the flip
+        // `ploidy - g` generalize beyond the diploid `2 - g` (diploid = 2,
+        // haploid = 1, auto = per-marker max). Diploid recovers prior behavior.
+        let ploidy = config.ploidy.resolve(g_raw);
+        let af = g_raw.iter().filter(|d| !d.is_nan()).sum::<f64>() / (ploidy * n as f64);
         let g0: Vec<f64> = if af > 0.5 {
-            g_raw.iter().map(|&gi| 2.0 - gi).collect()
+            g_raw.iter().map(|&gi| ploidy - gi).collect()
         } else {
             g_raw.clone()
         };

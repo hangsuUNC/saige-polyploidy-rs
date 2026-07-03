@@ -57,6 +57,8 @@ pub struct BgenReader {
     index: Vec<BgenIndexEntry>,
     /// Sample subset indices.
     sample_subset: Option<Vec<usize>>,
+    /// Ploidy mode for AF/MAC normalization (default diploid).
+    ploidy: crate::traits::PloidyMode,
 }
 
 impl BgenReader {
@@ -107,6 +109,7 @@ impl BgenReader {
             data,
             index,
             sample_subset: None,
+            ploidy: crate::traits::PloidyMode::Diploid,
         })
     }
 
@@ -480,6 +483,10 @@ impl GenotypeReader for BgenReader {
         Ok(())
     }
 
+    fn set_ploidy(&mut self, mode: crate::traits::PloidyMode) {
+        self.ploidy = mode;
+    }
+
     fn read_marker(&mut self, index: u64) -> Result<MarkerData> {
         let idx = index as usize;
         if idx >= self.index.len() {
@@ -493,7 +500,7 @@ impl GenotypeReader for BgenReader {
             None => all_dosages,
         };
 
-        let (af, mac, n_valid) = MarkerData::compute_af(&dosages);
+        let (af, mac, n_valid, ploidy) = MarkerData::compute_af(&dosages, self.ploidy);
 
         let entry = &self.index[idx];
         Ok(MarkerData {
@@ -508,6 +515,7 @@ impl GenotypeReader for BgenReader {
             af,
             mac,
             n_valid,
+            ploidy,
             is_imputed: true,
             info_score: None,
         })
